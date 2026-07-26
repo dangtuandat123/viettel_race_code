@@ -1,0 +1,8 @@
+# torch + torchvision are expected to be preinstalled (vast.ai pytorch image).
+# gsplat is installed separately in setup_server.sh (needs TORCH_CUDA_ARCH_LIST).
+numpy
+opencv-python-headless
+pillow
+scipy
+lpips==0.1.4
+ninja
