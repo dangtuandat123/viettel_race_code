@@ -1,48 +1,62 @@
 #!/usr/bin/env bash
-# Full flow for ONE private scene:
-#   prepare -> fold-0 train (pseudo-val) -> full train -> render test poses
-#   -> [if RIFE installed] VFI gate on fold + apply to test (pred_test_final)
-#   bash scripts/run_private_scene.sh HCM0249
+# Round-2 flow for ONE scene:
+#   prepare -> fold-0 train (pseudo-val) -> full train -> render test (baseline)
+#   -> warp_fuse gate on fold-0 -> warp_fuse test -> final render with fusion
+# Result: <WORK>/<SCENE>/pred_test_final (== baseline GS when fusion is gated off)
+#   bash scripts/run_private_scene.sh bonsai
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 SCENE=${1:?usage: run_private_scene.sh <SCENE>}
-DATA=${DATA:-/workspace/VAI_NVS_DATA/phase1/private_set1}
+DATA=${DATA:-/workspace/VAI_NVS_DATA_ROUND2}
 WORK=${WORK:-/workspace/work}
 STRAT=${STRAT:-mcmc}
-STEPS=${STEPS:-40000}
-FOLD0=${FOLD0:-1}          # FOLD0=0: skip the fold-0 training run (saves ~40 min/scene;
-                           # VFI gating then reuses the newest existing fold-0 checkpoint)
-EXTRA_ARGS=${EXTRA_ARGS:-} # extra train_gs flags, e.g. "--lpips-weight 0.05"
-RIFE_DIR=${RIFE_DIR:-/workspace/Practical-RIFE}
+STEPS=${STEPS:-60000}
+FOLD0=${FOLD0:-1}          # FOLD0=0: skip the fold-0 training run (fusion gate
+                           # then needs an existing fold-0 checkpoint)
+# Round-2 defaults: per-image appearance (video AE drift), random background
+# (floaters), canonical MCMC init (keep all SfM points), stronger LPIPS loss.
+TRAIN_FLAGS=${TRAIN_FLAGS:---appearance --random-bkgd \
+  --init-opacity 0.5 --init-scale 0.1 --init-max-error 100 \
+  --lpips-weight 0.2 --lpips-start-frac 0.25 --lpips-crop 640}
+EXTRA_ARGS=${EXTRA_ARGS:-} # appended to train_gs, e.g. "--cap-max 1500000 --sh-degree 2"
+FUSE_ARGS=${FUSE_ARGS:-}   # extra warp_fuse flags for both val and test
 RUN_FULL="${STRAT}_f-1_s$((STEPS/1000))k"
 RUN_FOLD="${STRAT}_f0_s$((STEPS/1000))k"
 
 python -m vai_nvs.prepare --data "$DATA/$SCENE" --work "$WORK"
 if [ "$FOLD0" = "1" ]; then
-  python -m vai_nvs.train_gs --work "$WORK" --scene "$SCENE" --fold 0 --strategy "$STRAT" --max-steps "$STEPS" $EXTRA_ARGS
+  python -m vai_nvs.train_gs --work "$WORK" --scene "$SCENE" --fold 0 \
+    --strategy "$STRAT" --max-steps "$STEPS" $TRAIN_FLAGS $EXTRA_ARGS
 fi
-python -m vai_nvs.train_gs --work "$WORK" --scene "$SCENE" --fold -1 --strategy "$STRAT" --max-steps "$STEPS" $EXTRA_ARGS
+python -m vai_nvs.train_gs --work "$WORK" --scene "$SCENE" --fold -1 \
+  --strategy "$STRAT" --max-steps "$STEPS" $TRAIN_FLAGS $EXTRA_ARGS
+
+# baseline GS renders (always produced; also the fallback inside the final dir)
 python -m vai_nvs.render_test --work "$WORK" --scene "$SCENE" --run "$RUN_FULL"
 
-if [ -f "$RIFE_DIR/train_log/flownet.pkl" ]; then
-  echo "--- VFI (RIFE) branch: fold gating + test apply ---"
-  # pick a fold-0 checkpoint for honest (out-of-fold) gating: this run's if it
-  # exists, else the newest older fold-0 run, else fall back to the full ckpt
-  if [ -f "$WORK/$SCENE/runs/$RUN_FOLD/ckpt_last.pt" ]; then
-    VFI_VAL_RUN="$RUN_FOLD"
-  else
-    ALT=$(ls -dt "$WORK/$SCENE"/runs/*_f0_* 2>/dev/null | head -1 | xargs -r basename || true)
-    VFI_VAL_RUN=${ALT:-$RUN_FULL}
-  fi
-  echo "VFI gating uses run: $VFI_VAL_RUN"
-  python -m vai_nvs.vfi --work "$WORK" --scene "$SCENE" --run "$VFI_VAL_RUN" \
-    --mode val --fold 0 --rife-dir "$RIFE_DIR" 2>&1 | tee "$WORK/$SCENE/vfi_val.log"
-  python -m vai_nvs.vfi --work "$WORK" --scene "$SCENE" --run "$RUN_FULL" \
-    --mode test --rife-dir "$RIFE_DIR"
+# --- warp fusion: gate on fold-0, then apply to test ---
+if [ -f "$WORK/$SCENE/runs/$RUN_FOLD/ckpt_last.pt" ]; then
+  GATE_RUN="$RUN_FOLD"
 else
-  echo "NOTE: RIFE not found at $RIFE_DIR (run: bash setup_rife.sh) — skipping VFI, "
-  echo "      submission will use plain GS renders (pred_test)."
+  ALT=$(ls -dt "$WORK/$SCENE"/runs/*_f0_* 2>/dev/null | head -1 | xargs -r basename || true)
+  GATE_RUN=${ALT:-}
+fi
+if [ -n "$GATE_RUN" ]; then
+  echo "--- warp_fuse gating on fold-0 run: $GATE_RUN ---"
+  python -m vai_nvs.warp_fuse --work "$WORK" --scene "$SCENE" --run "$GATE_RUN" \
+    --mode val --fold 0 $FUSE_ARGS 2>&1 | tee "$WORK/$SCENE/fusion_val.log"
+  python -m vai_nvs.warp_fuse --work "$WORK" --scene "$SCENE" --run "$RUN_FULL" \
+    --mode test $FUSE_ARGS
+else
+  echo "NOTE: no fold-0 checkpoint found — skipping fusion gate (pred_test_final = GS only)."
 fi
 
-echo "DONE $SCENE — fold metrics: $WORK/$SCENE/runs/$RUN_FOLD/eval.jsonl"
+# final renders: fused .npy used where present, per-image GS fallback otherwise
+python -m vai_nvs.render_test --work "$WORK" --scene "$SCENE" --run "$RUN_FULL" \
+  --fused-dir "$WORK/$SCENE/fused_test" --out "$WORK/$SCENE/pred_test_final"
+
+echo "DONE $SCENE"
+echo "  fold-0 GS metrics : $WORK/$SCENE/runs/$RUN_FOLD/eval.jsonl"
+echo "  fusion decision   : $WORK/$SCENE/fusion_decision.json"
+echo "  submission source : $WORK/$SCENE/pred_test_final"

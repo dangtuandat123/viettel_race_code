@@ -61,6 +61,9 @@ def parse_args():
     ap.add_argument("--lpips-crop", type=int, default=512)
     ap.add_argument("--no-antialiased", action="store_true")
     ap.add_argument("--no-absgrad", action="store_true")
+    ap.add_argument("--random-bkgd", action="store_true",
+                    help="random background color per step (suppresses floaters; "
+                         "eval/test rendering keeps the black background)")
     ap.add_argument("--grow-grad2d", type=float, default=0.0006)
     ap.add_argument("--refine-stop-frac", type=float, default=0.67)
     ap.add_argument("--appearance", action="store_true",
@@ -287,9 +290,11 @@ def main():
         gt = images_u8[nm].to(device).float() / 255.0  # H,W,3
         sh_used = min(step // 1000, args.sh_degree)
 
+        bkgd = torch.rand(1, 3, device=device) if args.random_bkgd else None
         render, alpha, info = render_gs(
             splats, viewmats[nm], cam["K"], cam["W"], cam["H"], sh_used,
-            render_mode="RGB", antialiased=antialiased, absgrad=absgrad)
+            render_mode="RGB", antialiased=antialiased, absgrad=absgrad,
+            background=bkgd)
         strategy.step_pre_backward(splats, optimizers, strategy_state, step, info)
 
         rgb = render

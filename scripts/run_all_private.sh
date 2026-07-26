@@ -1,28 +1,23 @@
 #!/usr/bin/env bash
-# All 8 private scenes sequentially, then package the submission.
-# Uses pred_test_final (GS + gated VFI) when RIFE is installed, else pred_test.
+# All round-2 scenes sequentially, then package the submission from
+# pred_test_final (GS + fold-0-gated warp fusion; equals plain GS when gated off).
 #   bash scripts/run_all_private.sh
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-DATA=${DATA:-/workspace/VAI_NVS_DATA/phase1/private_set1}
+DATA=${DATA:-/workspace/VAI_NVS_DATA_ROUND2}
 WORK=${WORK:-/workspace/work}
-RIFE_DIR=${RIFE_DIR:-/workspace/Practical-RIFE}
 
-python -m vai_nvs.audit --data "$DATA" --out "$WORK/audit_private.json"
+python -m vai_nvs.audit --data "$DATA" --out "$WORK/audit_round2.json"
 
 for S in $(ls -d "$DATA"/*/ | xargs -n1 basename); do
-  echo "================ PRIVATE $S ================"
+  echo "================ SCENE $S ================"
   bash scripts/run_private_scene.sh "$S"
 done
 
-if [ -f "$RIFE_DIR/train_log/flownet.pkl" ]; then
-  PRED=pred_test_final
-  echo "--- VFI decisions ---"
-  grep -h '"mode"' "$WORK"/*/vfi_decision.json || true
-else
-  PRED=pred_test
-fi
+echo "--- fusion decisions ---"
+grep -h '"enable"\|"mean_delta"' "$WORK"/*/fusion_decision.json 2>/dev/null || true
+
 python -m vai_nvs.make_submission --data "$DATA" --work "$WORK" \
-  --pred-dirname "$PRED" --out "$WORK/submission_round1.zip"
-echo "Packaged from: $PRED"
+  --pred-dirname pred_test_final --out "$WORK/submission_round2.zip"
+echo "Packaged from: pred_test_final"
