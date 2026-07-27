@@ -14,12 +14,10 @@ STRAT=${STRAT:-mcmc}
 STEPS=${STEPS:-60000}
 FOLD0=${FOLD0:-1}          # FOLD0=0: skip the fold-0 training run (fusion gate
                            # then needs an existing fold-0 checkpoint)
-# Round-2 defaults: per-image appearance (video AE drift), random background
-# (floaters), canonical MCMC init (keep all SfM points), stronger LPIPS loss.
-TRAIN_FLAGS=${TRAIN_FLAGS:---appearance --random-bkgd \
-  --init-opacity 0.5 --init-scale 0.1 --init-max-error 100 \
-  --lpips-weight 0.2 --lpips-start-frac 0.25 --lpips-crop 640}
-EXTRA_ARGS=${EXTRA_ARGS:-} # appended to train_gs, e.g. "--cap-max 1500000 --sh-degree 2"
+# Defaults: MCMC with 3M cap, SH degree 2; all other params use train_gs.py
+# code defaults (init-opacity 0.1, init-scale 1.0, lpips-weight 0.1, etc.).
+TRAIN_FLAGS=${TRAIN_FLAGS:---cap-max 3000000 --sh-degree 2}
+EXTRA_ARGS=${EXTRA_ARGS:-} # appended to train_gs, e.g. "--appearance --random-bkgd"
 FUSE_ARGS=${FUSE_ARGS:-}   # extra warp_fuse flags for both val and test
 RUN_FULL="${STRAT}_f-1_s$((STEPS/1000))k"
 RUN_FOLD="${STRAT}_f0_s$((STEPS/1000))k"
