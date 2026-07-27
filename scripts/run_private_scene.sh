@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Round-2 flow for ONE scene:
-#   prepare -> fold-0 train (pseudo-val) -> full train -> render test (baseline)
-#   -> warp_fuse gate on fold-0 -> warp_fuse test -> final render with fusion
+#   prepare -> fold-0 train -> warp_fuse gate (see scores early)
+#   -> full train -> render baseline -> warp_fuse test -> final render
 # Result: <WORK>/<SCENE>/pred_test_final (== baseline GS when fusion is gated off)
 #   bash scripts/run_private_scene.sh bonsai
 set -euo pipefail
@@ -25,17 +25,15 @@ RUN_FULL="${STRAT}_f-1_s$((STEPS/1000))k"
 RUN_FOLD="${STRAT}_f0_s$((STEPS/1000))k"
 
 python -m vai_nvs.prepare --data "$DATA/$SCENE" --work "$WORK"
+
+# --- fold-0 train (pseudo-validation) ---
 if [ "$FOLD0" = "1" ]; then
   python -m vai_nvs.train_gs --work "$WORK" --scene "$SCENE" --fold 0 \
     --strategy "$STRAT" --max-steps "$STEPS" $TRAIN_FLAGS $EXTRA_ARGS
 fi
-python -m vai_nvs.train_gs --work "$WORK" --scene "$SCENE" --fold -1 \
-  --strategy "$STRAT" --max-steps "$STEPS" $TRAIN_FLAGS $EXTRA_ARGS
 
-# baseline GS renders (always produced; also the fallback inside the final dir)
-python -m vai_nvs.render_test --work "$WORK" --scene "$SCENE" --run "$RUN_FULL"
-
-# --- warp fusion: gate on fold-0, then apply to test ---
+# --- warp_fuse gating on fold-0 (scores visible BEFORE full training) ---
+GATE_RUN=""
 if [ -f "$WORK/$SCENE/runs/$RUN_FOLD/ckpt_last.pt" ]; then
   GATE_RUN="$RUN_FOLD"
 else
@@ -46,10 +44,21 @@ if [ -n "$GATE_RUN" ]; then
   echo "--- warp_fuse gating on fold-0 run: $GATE_RUN ---"
   python -m vai_nvs.warp_fuse --work "$WORK" --scene "$SCENE" --run "$GATE_RUN" \
     --mode val --fold 0 $FUSE_ARGS 2>&1 | tee "$WORK/$SCENE/fusion_val.log"
-  python -m vai_nvs.warp_fuse --work "$WORK" --scene "$SCENE" --run "$RUN_FULL" \
-    --mode test $FUSE_ARGS
 else
   echo "NOTE: no fold-0 checkpoint found — skipping fusion gate (pred_test_final = GS only)."
+fi
+
+# --- full training (all images) ---
+python -m vai_nvs.train_gs --work "$WORK" --scene "$SCENE" --fold -1 \
+  --strategy "$STRAT" --max-steps "$STEPS" $TRAIN_FLAGS $EXTRA_ARGS
+
+# baseline GS renders (always produced; also the fallback inside the final dir)
+python -m vai_nvs.render_test --work "$WORK" --scene "$SCENE" --run "$RUN_FULL"
+
+# --- warp fusion on test (uses full checkpoint; skipped if gate disabled) ---
+if [ -n "$GATE_RUN" ]; then
+  python -m vai_nvs.warp_fuse --work "$WORK" --scene "$SCENE" --run "$RUN_FULL" \
+    --mode test $FUSE_ARGS
 fi
 
 # final renders: fused .npy used where present, per-image GS fallback otherwise
