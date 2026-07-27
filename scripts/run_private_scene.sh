@@ -11,7 +11,7 @@ SCENE=${1:?usage: run_private_scene.sh <SCENE>}
 DATA=${DATA:-/workspace/VAI_NVS_DATA_ROUND2}
 WORK=${WORK:-/workspace/work}
 STRAT=${STRAT:-mcmc}
-STEPS=${STEPS:-60000}
+STEPS=${STEPS:-45000}
 FOLD0=${FOLD0:-1}          # FOLD0=0: skip the fold-0 training run (fusion gate
                            # then needs an existing fold-0 checkpoint)
 # Defaults: MCMC with 3M cap, SH degree 2; all other params use train_gs.py
