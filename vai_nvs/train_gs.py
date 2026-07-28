@@ -393,13 +393,25 @@ def main():
         loss.backward()
         
         # S3 & S4 Accumulate gradients
-        means2d_grad = info.get("means2d").grad if (isinstance(info, dict) and "means2d" in info and info["means2d"].grad is not None) else None
+        means2d_grad = None
+        if isinstance(info, dict) and "means2d" in info and info["means2d"] is not None:
+            if hasattr(info["means2d"], "absgrad") and info["means2d"].absgrad is not None:
+                means2d_grad = info["means2d"].absgrad.clone()
+            elif info["means2d"].grad is not None:
+                means2d_grad = info["means2d"].grad.clone()
+                
+            # Normalize grads to screen space like gsplat default strategy
+            if means2d_grad is not None:
+                means2d_grad[..., 0] *= cam["W"] / 2.0
+                means2d_grad[..., 1] *= cam["H"] / 2.0
+                
         gaussians.accumulate_gradients(means2d_grad)
 
         # Hacks Post-Backward Logic
-        if step <= int(args.refine_stop_frac * args.max_steps):
+        refine_stop_step = int(args.refine_stop_frac * args.max_steps)
+        if step <= refine_stop_step:
             # S3 & S4 Densification Execution
-            is_densify = (500 <= step <= 10000) and (step % 100 == 0)
+            is_densify = (500 <= step <= refine_stop_step) and (step % 100 == 0)
             if is_densify:
                 candidate_mask = s3_s4.evaluate_densification_candidates(
                     gaussians.grad_accum_u, gaussians.grad_accum_v, gaussians.denom_accum, tau_u, tau_v)
