@@ -4,5 +4,6 @@ numpy
 opencv-python-headless
 pillow
 scipy
+torchvision
 lpips==0.1.4
 ninja

@@ -214,8 +214,8 @@ def main():
     # Init 13 Hacks Modules
     s12_corrector = COLMAPScaleCorrector()
     s1_s2 = RobustSceneScalePreprocessor()
-    s3_s4 = FocalAspectAdaptiveDensifier()
-    s9_s10 = MCMCStabilizerAndCapManager(N_max=1500000)
+    s3_s4 = FocalAspectAdaptiveDensifier(tau_base=args.grow_grad2d)
+    s9_s10 = MCMCStabilizerAndCapManager(N_max=args.cap_max)
     s5_s7 = FrustumAndFogPruner()
     s6_s8 = SHRegularizerAndTruncator()
     s11 = EarlyConvergenceMonitor()
@@ -470,7 +470,7 @@ def main():
                     save_checkpoint(out_dir / "ckpt_best.pt", step + 1, splats, app_emb,
                                     train_names, config, extra={"val_metrics": agg})
                 # S11 Early Stop
-                if s11.check_early_stop(step, agg["score_lb"]):
+                if s11.check_early_stop(step + 1, agg["score_lb"]):
                     break
 
     log_f.close()

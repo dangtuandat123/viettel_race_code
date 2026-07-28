@@ -15,8 +15,8 @@ FOLD0=${FOLD0:-1}          # FOLD0=1: run fold-0 for validation metrics
 
 # Defaults: MCMC with 3M cap, SH degree 2; all other params use train_gs.py
 # code defaults (init-opacity 0.1, init-scale 1.0, lpips-weight 0.1, etc.).
-TRAIN_FLAGS=${TRAIN_FLAGS:---cap-max 3000000 --sh-degree 2}
-EXTRA_ARGS=${EXTRA_ARGS:-} # appended to train_gs, e.g. "--appearance --random-bkgd"
+TRAIN_FLAGS=${TRAIN_FLAGS:---cap-max 3000000 --sh-degree 3}
+EXTRA_ARGS=${EXTRA_ARGS:---appearance --random-bkgd}
 RUN_FULL="${STRAT}_f-1_s$((STEPS/1000))k"
 RUN_FOLD="${STRAT}_f0_s$((STEPS/1000))k"
 
@@ -34,7 +34,7 @@ python -m vai_nvs.train_gs --work "$WORK" --scene "$SCENE" --fold -1 \
 
 # --- final renders (GS only) ---
 python -m vai_nvs.render_test --work "$WORK" --scene "$SCENE" --run "$RUN_FULL" \
-  --out "$WORK/$SCENE/pred_test_final"
+  --which best --out "$WORK/$SCENE/pred_test_final"
 
 echo "DONE $SCENE"
 if [ "$FOLD0" = "1" ]; then
