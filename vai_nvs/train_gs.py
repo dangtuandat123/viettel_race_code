@@ -200,7 +200,7 @@ def main():
     images_u8, viewmats, cam_ids, frame_idxs = {}, {}, {}, []
     for nm in train_names:
         arr = np.asarray(Image.open(work_scene / "images_ud" / (nm + ".png")).convert("RGB"))
-        images_u8[nm] = torch.from_numpy(arr)  # H,W,3 uint8 CPU
+        images_u8[nm] = torch.from_numpy(arr.copy())  # H,W,3 uint8 CPU
         im = name2im[nm]
         viewmats[nm] = torch.from_numpy(
             camlib.w2c_matrix(np.array(im["qvec"]), np.array(im["tvec"]))).float()
@@ -430,7 +430,9 @@ def main():
             # S9 MCMC Relocation
             reloc_rate = s9_s10.get_dampened_mcmc_relocation_rate(step)
             if reloc_rate > 0 and step % 500 == 0:
-                gaussians.relocate_points(reloc_rate)
+                n_reloc = gaussians.relocate_points(reloc_rate)
+                if n_reloc > 0:
+                    print(f"[S9 MCMC Relocation] Step {step}: Relocated {n_reloc:,} splats (rate: {reloc_rate:.6f}).")
 
             # S10 Hard Cap Ceiling
             if len(gaussians._xyz) > s9_s10.N_max:

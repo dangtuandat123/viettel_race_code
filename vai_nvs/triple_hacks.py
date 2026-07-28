@@ -61,11 +61,15 @@ class COLMAPScaleCorrector:
             return keypoints_2d, intrinsics_K, 1.0
             
         threshold = self.sanity_threshold if self.sanity_threshold > 0 else 1.0
-
         if median_reproj_error > threshold:
-            scale_factor = float(round(median_reproj_error / threshold))
-            if scale_factor < 1.0:
-                scale_factor = 1.0
+            raw_scale = float(median_reproj_error / threshold)
+            # Cap the scale factor to 8.0 to prevent catastrophic scaling on broken datasets like 'chair'
+            if raw_scale > 8.0:
+                print(f"[S12 Auto-Correction] Warning: Reproj error {median_reproj_error} is too high! Capping scale to 8.0")
+                raw_scale = 8.0
+                
+            # Snap to nearest power of 2 (1, 2, 4, 8)
+            scale_factor = float(2 ** round(math.log2(max(1.0, raw_scale))))
                 
             corrected_keypoints = keypoints_2d * scale_factor
             corrected_intrinsics = intrinsics_K.clone()
