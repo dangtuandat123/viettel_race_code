@@ -740,6 +740,8 @@ class GaussianModel:
     def accumulate_gradients(self, means2d_grad: Optional[torch.Tensor] = None):
         """Accumulate 2D screen / positional gradient magnitudes into grad_accum_u & grad_accum_v."""
         if means2d_grad is not None:
+            if means2d_grad.ndim == 3:
+                means2d_grad = means2d_grad.squeeze(0)
             with torch.no_grad():
                 self.grad_accum_u += means2d_grad[:, 0].abs()
                 self.grad_accum_v += means2d_grad[:, 1].abs()
