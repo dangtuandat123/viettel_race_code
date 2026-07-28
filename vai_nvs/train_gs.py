@@ -45,6 +45,7 @@ from .triple_hacks import (
     FrustumAndFogPruner,
     SHRegularizerAndTruncator,
     EarlyConvergenceMonitor,
+    SoftWarpFusionBlender,
     GaussianModel
 )
 
@@ -218,11 +219,20 @@ def main():
     s5_s7 = FrustumAndFogPruner()
     s6_s8 = SHRegularizerAndTruncator()
     s11 = EarlyConvergenceMonitor()
-
     # S12 Auto-Correction
-    dummy_kpts = torch.zeros((len(xyz), 2))
-    dummy_K = torch.eye(3)
-    _, _, scale_factor = s12_corrector.correct_scale(dummy_kpts, dummy_K, median_err)
+    if len(meta["cameras"]) > 0:
+        first_cid = int(list(meta["cameras"].keys())[0])
+        sample_K = cams[first_cid]["K"]
+        _, _, scale_factor = s12_corrector.correct_scale(
+            torch.zeros((len(xyz), 2)), sample_K, median_err
+        )
+        if scale_factor > 1.0:
+            print(f"[S12 Applied] Scaling 3D points xyz and scene_scale by factor {scale_factor:.2f}")
+            xyz = xyz * scale_factor
+            scene_scale = scene_scale * scale_factor
+
+    # Init S13 Blender
+    s13_blender = SoftWarpFusionBlender(tau_blend=0.1)
 
     # S1 & S2 Q-Prune & Robust LR
     cams_centers = []
@@ -298,7 +308,13 @@ def main():
                 cam["render_K"], cam["obj"], cam["W"], cam["H"],
                 args.eval_supersample, args.sh_degree, antialiased,
                 app_emb6=emb6, cache=redist_cache)
-            # Save rendered image to disk instead of accumulating in RAM
+            if len(im.get("rgb", [])) > 0:
+                Image.fromarray(im["rgb"]).save(save_dir / f"gt_{nm}")
+            if "warped_frame" in im:
+                warped_tensor = torch.from_numpy(im["warped_frame"]).permute(2, 0, 1).float().to(device) / 255.0
+                pred_tensor = torch.from_numpy(pred).permute(2, 0, 1).float().to(device) / 255.0
+                fused_tensor, _ = s13_blender.blend(pred_tensor, warped_tensor)
+                pred = (fused_tensor.permute(1, 2, 0).cpu().numpy() * 255.0).astype(np.uint8)
             Image.fromarray(pred).save(save_dir / nm)
             gt = np.asarray(Image.open(orig_dir / nm).convert("RGB"))
             rows.append(metrics.compare_uint8(pred, gt, device=device,
@@ -338,6 +354,11 @@ def main():
             splats, viewmats[nm], cam["K"], cam["W"], cam["H"], sh_used,
             render_mode="RGB", antialiased=antialiased, absgrad=absgrad,
             background=bkgd)
+        
+        # S3/S4: Retain grad for 2D screen means
+        if isinstance(info, dict) and "means2d" in info and info["means2d"] is not None:
+            info["means2d"].retain_grad()
+
         # 1. S3 & S4 thresholds
         tau_u, tau_v = s3_s4.compute_adaptive_thresholds(cam["K"][0,0].item(), cam["K"][1,1].item(), cam["W"], cam["H"])
 
@@ -372,7 +393,8 @@ def main():
         loss.backward()
         
         # S3 & S4 Accumulate gradients
-        gaussians.accumulate_gradients()
+        means2d_grad = info.get("means2d").grad if (isinstance(info, dict) and "means2d" in info and info["means2d"].grad is not None) else None
+        gaussians.accumulate_gradients(means2d_grad)
 
         # Hacks Post-Backward Logic
         if step <= int(args.refine_stop_frac * args.max_steps):
@@ -411,10 +433,19 @@ def main():
         gaussians.optimizer.step()
         
         # S8 Truncation Sweep
-        if step in [18000, 36000] or (step > 15000 and step % 3000 == 0):
-            new_sh_rest, _ = s6_s8.apply_energy_adaptive_truncation(gaussians._features_dc, gaussians._features_rest, step)
-            with torch.no_grad():
-                gaussians._features_rest.copy_(new_sh_rest)
+        current_step = step + 1
+        if current_step in [18000, 36000] or (current_step > 15000 and current_step % 3000 == 0):
+            new_sh_rest, n_trunc = s6_s8.apply_energy_adaptive_truncation(gaussians._features_dc, gaussians._features_rest, current_step)
+            if n_trunc > 0:
+                with torch.no_grad():
+                    gaussians._features_rest.copy_(new_sh_rest)
+                    p_rest = gaussians.optimizer.param_groups[2]['params'][0]
+                    p_state = gaussians.optimizer.state[p_rest]
+                    zero_mask = (new_sh_rest == 0.0)
+                    if 'exp_avg' in p_state:
+                        p_state['exp_avg'][zero_mask] = 0.0
+                    if 'exp_avg_sq' in p_state:
+                        p_state['exp_avg_sq'][zero_mask] = 0.0
 
         if app_opt is not None:
             app_opt.step()

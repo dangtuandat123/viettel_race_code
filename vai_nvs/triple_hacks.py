@@ -729,9 +729,14 @@ class GaussianModel:
         ]
         self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
 
-    def accumulate_gradients(self):
+    def accumulate_gradients(self, means2d_grad: Optional[torch.Tensor] = None):
         """Accumulate 2D screen / positional gradient magnitudes into grad_accum_u & grad_accum_v."""
-        if self._xyz is not None and self._xyz.grad is not None:
+        if means2d_grad is not None:
+            with torch.no_grad():
+                self.grad_accum_u += means2d_grad[:, 0].abs()
+                self.grad_accum_v += means2d_grad[:, 1].abs()
+                self.denom_accum += 1.0
+        elif self._xyz is not None and self._xyz.grad is not None:
             with torch.no_grad():
                 grad_norm = self._xyz.grad.abs()
                 self.grad_accum_u += grad_norm[:, 0]
