@@ -1077,7 +1077,7 @@ class TripleCheck3DGSPipeline:
             stats = self.train_step(step, fx, fy, W, H, step_stride=step_stride)
             
             # S8 Truncation Sweep at Step 18,000 and 36,000 (STRICT CONFLICT GUARD: t >= 18k)
-            if step in [18000, 36000] or (step > 15000 and step % 3000 == 0):
+            if step in [18000, 36000]:
                 print(f"\n[S8 Trigger] Step {step}: Executing Energy-Adaptive SH Truncation Sweep...")
                 new_sh_rest, n_trunc = self.s6_s8_sh_manager.apply_energy_adaptive_truncation(
                     self.gaussians.get_features_dc,
