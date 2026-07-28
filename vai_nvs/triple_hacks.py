@@ -1089,11 +1089,12 @@ if __name__ == "__main__":
     pts_normal = torch.randn((1000, 3)) * 5.0
     pts_outliers = torch.randn((100, 3)) * 100.0  # Extreme background floaters
     pts_all = torch.cat([pts_normal, pts_outliers], dim=0)
+    rgb_all = torch.rand((len(pts_all), 3))
     
     cam_centers = torch.randn((20, 3)) * 8.0
     
     # 2. Run Scene Initialization (S12 -> S1 & S2)
-    pipeline.initialize_scene(raw_kpts, intrinsics, median_reproj, pts_all, cam_centers)
+    pipeline.initialize_scene(raw_kpts, intrinsics, median_reproj, pts_all, rgb_all, cam_centers)
     
     # 3. Run Steps with stride=500 for fast dry-run (Simulating S3, S4, S5, S6, S7, S9, S10, S8, S11)
     pipeline.run_pipeline(total_steps=36000, eval_interval=3000, step_stride=500)
