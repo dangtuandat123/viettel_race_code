@@ -34,7 +34,7 @@ python -m vai_nvs.train_gs --work "$WORK" --scene "$SCENE" --fold -1 \
 
 # --- final renders (GS only) ---
 python -m vai_nvs.render_test --work "$WORK" --scene "$SCENE" --run "$RUN_FULL" \
-  --which best --out "$WORK/$SCENE/pred_test_final"
+  --which last --out "$WORK/$SCENE/pred_test_final"
 
 echo "DONE $SCENE"
 if [ "$FOLD0" = "1" ]; then
