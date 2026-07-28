@@ -5,14 +5,15 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 apt-get update -y >/dev/null 2>&1 || true
-apt-get install -y --no-install-recommends tmux htop rsync unzip >/dev/null 2>&1 || true
+apt-get install -y --no-install-recommends tmux htop rsync unzip build-essential libglib2.0-0 libgl1-mesa-glx ninja-build >/dev/null 2>&1 || true
 
-python -m pip install -U pip
-pip install -r requirements.txt
+python -m pip install -U pip wheel setuptools
+python -m pip install -r requirements.txt
 
-# RTX 3090 = compute capability 8.6 (keeps the CUDA JIT build fast)
-export TORCH_CUDA_ARCH_LIST="8.6"
-pip install gsplat==1.4.0
+# RTX 30xx = 8.6 (Ampere), RTX 40xx = 8.9 (Ada Lovelace)
+export TORCH_CUDA_ARCH_LIST="8.6;8.9"
+export MAX_JOBS=4
+python -m pip install --no-cache-dir gsplat==1.4.0
 
 python - <<'PY'
 import torch
@@ -39,5 +40,5 @@ assert img.shape == (1, 240, 320, 3) and float(img.mean()) > 0
 print(f"gsplat smoke test OK ({time.time()-t0:.1f}s incl. JIT)")
 PY
 
-pip freeze > "pip_freeze_$(date +%Y%m%d).txt"
+python -m pip freeze > "pip_freeze_$(date +%Y%m%d).txt"
 echo "SETUP DONE"
