@@ -37,16 +37,6 @@ from . import colmap_io, dataset as ds, metrics
 from . import cameras as camlib
 from .gs_render import render_gs, apply_appearance, interp_appearance, save_checkpoint
 from .render_pipeline import RedistortCache, render_view_to_distorted
-from .triple_hacks import (
-    COLMAPScaleCorrector,
-    RobustSceneScalePreprocessor,
-    FocalAspectAdaptiveDensifier,
-    MCMCStabilizerAndCapManager,
-    FrustumAndFogPruner,
-    SHRegularizerAndTruncator,
-    EarlyConvergenceMonitor,
-    GaussianModel
-)
 
 
 def parse_args():
@@ -99,11 +89,10 @@ def load_points3d(scene_dir: Path, max_error=None):
     xyz = np.stack([p.xyz for p in pts.values()])
     rgb = np.stack([p.rgb for p in pts.values()]).astype(np.float32) / 255.0
     err = np.array([p.error for p in pts.values()])
-    median_err = np.median(err) if len(err) > 0 else 1.0
     if max_error is not None:
         keep = err <= max_error
         xyz, rgb = xyz[keep], rgb[keep]
-    return xyz, rgb, median_err
+    return xyz, rgb
 
 
 def init_splats(xyz, rgb, sh_degree, init_opacity, init_scale, device):
@@ -207,62 +196,30 @@ def main():
         frame_idxs.append(im["frame_idx"])
 
     # --- splats ---
-    xyz, rgb, median_err = load_points3d(scene_dir, args.init_max_error)
+    xyz, rgb = load_points3d(scene_dir, args.init_max_error)
     scene_scale = float(meta["scene_scale"])
-    
-    # Init 13 Hacks Modules
-    s12_corrector = COLMAPScaleCorrector()
-    s1_s2 = RobustSceneScalePreprocessor()
-    s3_s4 = FocalAspectAdaptiveDensifier()
-    s9_s10 = MCMCStabilizerAndCapManager(N_max=1500000)
-    s5_s7 = FrustumAndFogPruner()
-    s6_s8 = SHRegularizerAndTruncator()
-    s11 = EarlyConvergenceMonitor()
+    splats = init_splats(xyz, rgb, args.sh_degree, args.init_opacity, args.init_scale, device)
+    optimizers, mean_sched = build_optimizers(splats, scene_scale, args.max_steps)
+    print(f"[{args.scene}] init {xyz.shape[0]} gaussians, scene_scale={scene_scale:.3f}, "
+          f"strategy={args.strategy}, fold={args.fold}, run={run_name}")
 
-    # S12 Auto-Correction
-    dummy_kpts = torch.zeros((len(xyz), 2))
-    dummy_K = torch.eye(3)
-    _, _, scale_factor = s12_corrector.correct_scale(dummy_kpts, dummy_K, median_err)
-
-    # S1 & S2 Q-Prune & Robust LR
-    cams_centers = []
-    for nm, im in name2im.items():
-        w2c = camlib.w2c_matrix(np.array(im["qvec"]), np.array(im["tvec"]))
-        cams_centers.append(np.linalg.inv(w2c)[:3, 3])
-    cams_centers = torch.tensor(np.array(cams_centers), dtype=torch.float32)
-    
-    pts, r_robust, r_boundary, spatial_lr_scale, c_mean, valid_mask = s1_s2.process_initial_points(torch.from_numpy(xyz), cams_centers)
-    xyz_pruned = pts.numpy()
-    rgb_pruned = rgb[valid_mask.numpy()]
-    c_mean = c_mean.to(device)
-
-    # Setup GaussianModel
-    gaussians = GaussianModel(sh_degree=args.sh_degree)
-    gaussians.create_from_pcd(torch.from_numpy(xyz_pruned).float(), torch.from_numpy(rgb_pruned).float(), spatial_lr_scale, device)
-
-    # Dynamic dict mapping to match render_gs requirements
-    class SplatDict(dict):
-        def __init__(self, gaussians):
-            self.g = gaussians
-        def __getitem__(self, key):
-            if key == "means": return self.g._xyz
-            if key == "scales": return self.g._scaling
-            if key == "quats": return self.g._rotation
-            if key == "opacities": return self.g._opacity
-            if key == "sh0": return self.g._features_dc
-            if key == "shN": return self.g._features_rest
-            return super().__getitem__(key)
-        def keys(self): return ["means", "scales", "quats", "opacities", "sh0", "shN"]
-        def items(self): return [(k, self[k]) for k in self.keys()]
-
-    splats = SplatDict(gaussians)
-    
-    gamma = 0.01 ** (1.0 / args.max_steps)
-
-    print(f"[{args.scene}] init {len(xyz_pruned)} gaussians, scene_scale={scene_scale:.3f}, fold={args.fold}, run={run_name}")
-
+    from gsplat import DefaultStrategy, MCMCStrategy
     absgrad = not args.no_absgrad
     antialiased = not args.no_antialiased
+    if args.strategy == "default":
+        grow_grad2d = args.grow_grad2d if args.grow_grad2d is not None else (0.0008 if absgrad else 0.0002)
+        strategy = DefaultStrategy(
+            prune_opa=0.005, grow_grad2d=grow_grad2d, grow_scale3d=0.01,
+            refine_start_iter=500, refine_stop_iter=int(args.refine_stop_frac * args.max_steps),
+            reset_every=3000, refine_every=100, absgrad=absgrad, verbose=False)
+        strategy_state = strategy.initialize_state(scene_scale=scene_scale)
+    else:
+        strategy = MCMCStrategy(cap_max=args.cap_max, refine_start_iter=500,
+                                refine_stop_iter=int(0.9 * args.max_steps),
+                                refine_every=100, min_opacity=0.005, verbose=False)
+        strategy_state = strategy.initialize_state()
+        absgrad = False  # MCMC does not use screen-space grads
+    strategy.check_sanity(splats, optimizers)
 
     # --- appearance embeddings ---
     use_app = args.appearance
@@ -338,8 +295,7 @@ def main():
             splats, viewmats[nm], cam["K"], cam["W"], cam["H"], sh_used,
             render_mode="RGB", antialiased=antialiased, absgrad=absgrad,
             background=bkgd)
-        # 1. S3 & S4 thresholds
-        tau_u, tau_v = s3_s4.compute_adaptive_thresholds(cam["K"][0,0].item(), cam["K"][1,1].item(), cam["W"], cam["H"])
+        strategy.step_pre_backward(splats, optimizers, strategy_state, step, info)
 
         rgb = render
         if use_app:
@@ -354,10 +310,9 @@ def main():
         l_dssim = 1.0 - metrics.ssim_torch(x, y)
         loss = (1.0 - args.ssim_lambda) * l_charb + args.ssim_lambda * l_dssim
 
-        # S6 SH Smoothness Reg
-        sh_smooth_loss = s6_s8.compute_sh_smoothness_loss(gaussians._features_rest, step)
-        loss = loss + sh_smooth_loss
-
+        if args.strategy == "mcmc":
+            loss = loss + 0.01 * torch.sigmoid(splats["opacities"]).mean() \
+                        + 0.01 * torch.exp(splats["scales"]).mean()
         if use_app:
             loss = loss + args.app_reg * app_emb[name2appidx[nm]].square().mean()
         if lpips_train is not None and int(args.lpips_start_frac * args.max_steps) <= step < int(args.lpips_end_frac * args.max_steps):
@@ -368,58 +323,30 @@ def main():
             yc = y[..., hh:hh + c, ww:ww + c] * 2 - 1
             loss = loss + args.lpips_weight * lpips_train(xc, yc).mean()
 
-        gaussians.optimizer.zero_grad(set_to_none=True)
         loss.backward()
-        
-        # S3 & S4 Accumulate gradients
-        gaussians.accumulate_gradients()
 
-        # Hacks Post-Backward Logic
         if step <= int(args.refine_stop_frac * args.max_steps):
-            # S3 & S4 Densification Execution
-            is_densify = (500 <= step <= 10000) and (step % 100 == 0)
-            if is_densify:
-                candidate_mask = s3_s4.evaluate_densification_candidates(
-                    gaussians.grad_accum_u, gaussians.grad_accum_v, gaussians.denom_accum, tau_u, tau_v)
-                candidate_indices = torch.where(candidate_mask)[0]
-                if len(candidate_indices) > 0:
-                    capped_indices = s9_s10.enforce_cap_ceiling(len(gaussians._xyz), candidate_indices)
-                    if len(capped_indices) > 0:
-                        gaussians.densify_and_split_clone(capped_indices)
-                gaussians.reset_gradient_accumulators()
+            if len(splats["means"]) > 11500000:
+                strategy.grow_grad2d = 999.0
+                strategy.grow_scale3d = 999.0
+            else:
+                strategy.grow_grad2d = args.grow_grad2d if args.grow_grad2d is not None else (0.0008 if not getattr(args, "no_absgrad", False) else 0.0002)
+                strategy.grow_scale3d = 0.01
+            
+            if args.strategy == "default":
+                strategy.step_post_backward(splats, optimizers, strategy_state, step, info,
+                                            packed=False)
+            else:
+                strategy.step_post_backward(splats, optimizers, strategy_state, step, info,
+                                            lr=mean_sched.get_last_lr()[0])
 
-            # S5 & S7 Pruning
-            keep_mask, prune_stats = s5_s7.prune(gaussians._xyz, gaussians._opacity, c_mean, r_boundary, step)
-            if prune_stats["total_pruned"] > 0:
-                gaussians.prune_points(keep_mask)
-
-            # S9 MCMC Relocation
-            reloc_rate = s9_s10.get_dampened_mcmc_relocation_rate(step)
-            if reloc_rate > 0 and step % 500 == 0:
-                gaussians.relocate_points(reloc_rate)
-
-            # S10 Hard Cap Ceiling
-            if len(gaussians._xyz) > s9_s10.N_max:
-                excess = len(gaussians._xyz) - s9_s10.N_max
-                opacities = torch.sigmoid(gaussians._opacity).squeeze(-1)
-                _, topk_indices = torch.topk(opacities, s9_s10.N_max, largest=True)
-                cap_keep_mask = torch.zeros(len(gaussians._xyz), dtype=torch.bool, device=device)
-                cap_keep_mask[topk_indices] = True
-                gaussians.prune_points(cap_keep_mask)
-
-        # Optimization step
-        gaussians.optimizer.step()
-        
-        # S8 Truncation Sweep
-        if step in [18000, 36000] or (step > 15000 and step % 3000 == 0):
-            new_sh_rest, _ = s6_s8.apply_energy_adaptive_truncation(gaussians._features_dc, gaussians._features_rest, step)
-            with torch.no_grad():
-                gaussians._features_rest.copy_(new_sh_rest)
-
+        for opt in optimizers.values():
+            opt.step()
+            opt.zero_grad(set_to_none=True)
         if app_opt is not None:
             app_opt.step()
             app_opt.zero_grad(set_to_none=True)
-        gaussians.optimizer.param_groups[0]['lr'] *= gamma
+        mean_sched.step()
 
         if step % 100 == 0 or step == args.max_steps - 1:
             mem = torch.cuda.max_memory_allocated() / 1e9 if device.type == "cuda" else 0
@@ -438,9 +365,6 @@ def main():
                     best_score = agg["score_lb"]
                     save_checkpoint(out_dir / "ckpt_best.pt", step + 1, splats, app_emb,
                                     train_names, config, extra={"val_metrics": agg})
-                # S11 Early Stop
-                if s11.check_early_stop(step, agg["score_lb"]):
-                    break
 
     log_f.close()
     save_checkpoint(out_dir / "ckpt_last.pt", args.max_steps, splats, app_emb,
