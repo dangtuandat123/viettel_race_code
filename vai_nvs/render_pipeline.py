@@ -74,10 +74,3 @@ def render_view_to_distorted(splats: dict, qvec, tvec, render_K, dist_cam,
         warped = cv2.resize(warped, (width, height), interpolation=cv2.INTER_AREA)
     warped = np.clip(warped, 0.0, 1.0)
     return (warped * 255.0 + 0.5).astype(np.uint8)
-
-
-def camera_from_meta(cam_meta: dict):
-    """Rebuild a colmap_io.Camera from meta.json camera entry."""
-    from .colmap_io import Camera
-    return Camera(0, cam_meta["model"], int(cam_meta["width"]), int(cam_meta["height"]),
-                  np.array(cam_meta["params"], dtype=np.float64))

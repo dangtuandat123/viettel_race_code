@@ -78,10 +78,6 @@ def distortion_params(cam) -> np.ndarray:
     raise ValueError(f"Unsupported camera model: {cam.model}")
 
 
-def has_distortion(cam) -> bool:
-    return cam.model in DISTORTED_MODELS and np.any(distortion_params(cam) != 0)
-
-
 # ---------------------------- distortion math -------------------------------
 
 def apply_distortion(dist, x, y):

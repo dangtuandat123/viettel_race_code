@@ -10,9 +10,8 @@ All values are little-endian. Coordinate conventions:
 
 from __future__ import annotations
 
-import os
 import struct
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -31,7 +30,6 @@ CAMERA_MODELS = {
     9: ("RADIAL_FISHEYE", 5),
     10: ("THIN_PRISM_FISHEYE", 12),
 }
-CAMERA_MODEL_IDS = {name: mid for mid, (name, _) in CAMERA_MODELS.items()}
 
 
 @dataclass

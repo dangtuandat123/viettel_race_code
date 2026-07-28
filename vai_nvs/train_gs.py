@@ -291,7 +291,7 @@ def main():
         sh_used = min(step // 1000, args.sh_degree)
 
         bkgd = torch.rand(1, 3, device=device) if args.random_bkgd else None
-        render, alpha, info = render_gs(
+        render, _, info = render_gs(
             splats, viewmats[nm], cam["K"], cam["W"], cam["H"], sh_used,
             render_mode="RGB", antialiased=antialiased, absgrad=absgrad,
             background=bkgd)
