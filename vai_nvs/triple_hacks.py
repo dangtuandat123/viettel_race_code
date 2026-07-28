@@ -808,11 +808,16 @@ class GaussianModel:
                 cat_t = torch.cat([p.data, new_t], dim=0)
                 new_param = nn.Parameter(cat_t.requires_grad_(True))
                 
+                new_state = {}
                 if 'exp_avg' in p_state:
-                    p_state['exp_avg'] = torch.cat([p_state['exp_avg'], torch.zeros_like(new_t)], dim=0)
+                    new_state['exp_avg'] = torch.cat([p_state['exp_avg'], torch.zeros_like(new_t)], dim=0)
                 if 'exp_avg_sq' in p_state:
-                    p_state['exp_avg_sq'] = torch.cat([p_state['exp_avg_sq'], torch.zeros_like(new_t)], dim=0)
+                    new_state['exp_avg_sq'] = torch.cat([p_state['exp_avg_sq'], torch.zeros_like(new_t)], dim=0)
+                if 'step' in p_state:
+                    new_state['step'] = p_state['step']
                     
+                del self.optimizer.state[p]
+                self.optimizer.state[new_param] = new_state
                 param_group['params'][0] = new_param
                 
             self._xyz = self.optimizer.param_groups[0]['params'][0]
@@ -873,11 +878,16 @@ class GaussianModel:
                 
                 new_p = nn.Parameter(p[keep_indices].requires_grad_(True))
                 
+                new_state = {}
                 if 'exp_avg' in p_state:
-                    p_state['exp_avg'] = p_state['exp_avg'][keep_indices]
+                    new_state['exp_avg'] = p_state['exp_avg'][keep_indices]
                 if 'exp_avg_sq' in p_state:
-                    p_state['exp_avg_sq'] = p_state['exp_avg_sq'][keep_indices]
+                    new_state['exp_avg_sq'] = p_state['exp_avg_sq'][keep_indices]
+                if 'step' in p_state:
+                    new_state['step'] = p_state['step']
                     
+                del self.optimizer.state[p]
+                self.optimizer.state[new_p] = new_state
                 param_group['params'][0] = new_p
                 
             self._xyz = self.optimizer.param_groups[0]['params'][0]
