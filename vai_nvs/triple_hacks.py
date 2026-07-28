@@ -230,6 +230,10 @@ class FocalAspectAdaptiveDensifier:
         tau_u = self.tau_base * (self.f_ref / f_bar) * (self.W_ref / w_val)
         tau_v = self.tau_base * (self.f_ref / f_bar) * (self.H_ref / h_val)
         
+        # Clamp minimum effective threshold to prevent hyper-sensitive over-densification on high-res views
+        tau_u = max(tau_u, 0.0001)
+        tau_v = max(tau_v, 0.0001)
+        
         return tau_u, tau_v
 
     def evaluate_densification_candidates(
@@ -771,12 +775,19 @@ class GaussianModel:
             cand_scaling = self._scaling[candidate_indices]
             cand_rotation = self._rotation[candidate_indices]
             
+            # 3DGS Standard Scale Reduction: reduce spatial log-scale by log(1.6) ~ 0.4700036
+            scale_reduction = math.log(1.6)
+            cand_scaling_reduced = cand_scaling - scale_reduction
+            
+            # 1. Update parent candidate scales in place:
+            self._scaling[candidate_indices] = cand_scaling_reduced
+            
             # Create cloned/split parameters with small position perturbation
             new_xyz = cand_xyz + torch.randn_like(cand_xyz) * 0.01
             new_dc = cand_dc.clone()
             new_rest = cand_rest.clone()
             new_opacity = cand_opacity.clone()
-            new_scaling = cand_scaling.clone()
+            new_scaling = cand_scaling_reduced.clone()
             new_rotation = cand_rotation.clone()
             
             # Concatenate to existing tensors
