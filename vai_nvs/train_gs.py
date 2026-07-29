@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 import time
 from pathlib import Path
@@ -231,10 +232,20 @@ def main():
         first_cid = int(list(meta["cameras"].keys())[0])
         sample_K = cams[first_cid]["K"]
         # S12 Audit Fix: Do NOT scale 3D world coordinates independently of camera translation (tvec)
-        _, _, scale_factor = s12_corrector.correct_scale(
+        _, corr_K, scale_factor = s12_corrector.correct_scale(
             torch.zeros((len(xyz), 2)), sample_K, median_err
         )
-        print(f"[S12 Audited] SfM median reproj error: {median_err:.2f}px. Keeping nominal 3D spatial scale.")
+        if scale_factor != 1.0:
+            for cid in cams:
+                _, cams[cid]["K"], _ = s12_corrector.correct_scale(
+                    torch.zeros((len(xyz), 2)), cams[cid]["K"], median_err
+                )
+                fx = cams[cid]["K"][0, 0].item()
+                fy = cams[cid]["K"][1, 1].item()
+                cx = cams[cid]["K"][0, 2].item()
+                cy = cams[cid]["K"][1, 2].item()
+                cams[cid]["render_K"] = (fx, fy, cx, cy)
+        print(f"[S12 Audited] SfM median reproj error: {median_err:.2f}px. Scale factor: {scale_factor:.1f}.")
 
     # Init S13 Blender
     s13_blender = SoftWarpFusionBlender(tau_blend=0.1)
@@ -392,15 +403,19 @@ def main():
         
         # S3 & S4 Accumulate gradients
         means2d_grad = None
-        if isinstance(info, dict) and "means2d" in info and info["means2d"] is not None:
-            if hasattr(info["means2d"], "absgrad") and info["means2d"].absgrad is not None:
+        if isinstance(info, dict):
+            if "means2d_absgrad" in info and info["means2d_absgrad"] is not None:
+                means2d_grad = info["means2d_absgrad"].clone()
+            elif "absgrad" in info and info["absgrad"] is not None:
+                means2d_grad = info["absgrad"].clone()
+            elif "means2d" in info and info["means2d"] is not None and hasattr(info["means2d"], "absgrad") and info["means2d"].absgrad is not None:
                 means2d_grad = info["means2d"].absgrad.clone()
-            elif info["means2d"].grad is not None:
+            elif "means2d" in info and info["means2d"] is not None and info["means2d"].grad is not None:
                 means2d_grad = info["means2d"].grad.clone()
                 
             if means2d_grad is not None:
-                means2d_grad[..., 0] *= (cam["W"] / 2.0)
-                means2d_grad[..., 1] *= (cam["H"] / 2.0)
+                means2d_grad[..., 0] /= (cam["W"] / 2.0)
+                means2d_grad[..., 1] /= (cam["H"] / 2.0)
         gaussians.accumulate_gradients(means2d_grad)
 
         # Hacks Post-Backward Logic
@@ -481,7 +496,8 @@ def main():
         if app_opt is not None:
             app_opt.step()
             app_opt.zero_grad(set_to_none=True)
-        gaussians.optimizer.param_groups[0]['lr'] *= gamma
+        for param_group in gaussians.optimizer.param_groups:
+            param_group['lr'] *= gamma
 
         if step % 100 == 0 or step == args.max_steps - 1:
             mem = torch.cuda.max_memory_allocated() / 1e9 if device.type == "cuda" else 0

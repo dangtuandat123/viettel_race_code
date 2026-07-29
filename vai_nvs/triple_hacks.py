@@ -230,10 +230,6 @@ class FocalAspectAdaptiveDensifier:
         tau_u = self.tau_base * (self.f_ref / f_bar) * (self.W_ref / w_val)
         tau_v = self.tau_base * (self.f_ref / f_bar) * (self.H_ref / h_val)
         
-        # Clamp minimum effective threshold to prevent hyper-sensitive over-densification on high-res views
-        tau_u = max(tau_u, 0.0001)
-        tau_v = max(tau_v, 0.0001)
-        
         return tau_u, tau_v
 
     def evaluate_densification_candidates(
@@ -270,10 +266,7 @@ class FocalAspectAdaptiveDensifier:
 
 def ssim_reflect_padded(x: torch.Tensor, y: torch.Tensor, win_size: int = 11):
     from vai_nvs import metrics
-    pad = win_size // 2
-    x_padded = F.pad(x, (pad, pad, pad, pad), mode='reflect')
-    y_padded = F.pad(y, (pad, pad, pad, pad), mode='reflect')
-    return metrics.ssim_torch(x_padded, y_padded)
+    return metrics.ssim_torch(x, y, win_size=win_size)
 
 def compute_multiscale_loss(render_img, gt_img, step, max_steps, lpips_fn):
     l1 = F.l1_loss(render_img, gt_img)
@@ -927,7 +920,7 @@ class GaussianModel:
             rand_sample = high_indices[torch.randint(0, len(high_indices), (len(low_indices),))]
             noise = torch.randn_like(self._xyz[low_indices]) * 0.05
             self._xyz[low_indices] = self._xyz[rand_sample] + noise
-            self._opacity[low_indices] = -1.0  # reset opacity to low initial value
+            self._opacity[low_indices] = math.log(0.01 / 0.99)  # reset opacity logit for ~0.01 opacity
             
             # S9 Audit Fix: Zero out stale Adam momentum for relocated splats
             if self.optimizer is not None:

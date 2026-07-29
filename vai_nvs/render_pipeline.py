@@ -57,10 +57,10 @@ def render_view_to_distorted(splats: dict, qvec, tvec, render_K, dist_cam,
     rw, rh = int(round(width * s)), int(round(height * s))
     fx, fy, cx, cy = render_K
     
-    # S13: Supersample Principal Point Correction
+    # S13: Supersample Principal Point Alignment
     if s == 2.0:
-        cx_s = 2.0 * cx - 0.5
-        cy_s = 2.0 * cy - 0.5
+        cx_s = 2.0 * cx
+        cy_s = 2.0 * cy
     else:
         cx_s = cx * s
         cy_s = cy * s
