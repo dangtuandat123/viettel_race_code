@@ -398,10 +398,9 @@ def main():
             elif info["means2d"].grad is not None:
                 means2d_grad = info["means2d"].grad.clone()
                 
-            # S3/S4 Audit Fix: Keep means2d_grad in normalized NDC space [-1, 1]
-            # to match NDC thresholds tau_u and tau_v (tau_base = 0.0006)
-            pass
-                
+            if means2d_grad is not None:
+                means2d_grad[..., 0] *= (cam["W"] / 2.0)
+                means2d_grad[..., 1] *= (cam["H"] / 2.0)
         gaussians.accumulate_gradients(means2d_grad)
 
         # Hacks Post-Backward Logic

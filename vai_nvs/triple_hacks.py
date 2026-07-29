@@ -281,7 +281,7 @@ class MCMCStabilizerAndCapManager:
     """
     def __init__(
         self,
-        beta_0: float = 0.001,
+        beta_0: float = 0.005,
         gamma: float = 1.5e-4,
         N_max: int = 2500000
     ):
