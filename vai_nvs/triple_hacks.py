@@ -645,14 +645,13 @@ class SoftWarpFusionBlender(nn.Module):
         if img_target_ref is not None:
             ssim_gs = self._ssim_map(img_gs, img_target_ref)
             ssim_warp = self._ssim_map(img_warped, img_target_ref)
+            diff_ssim = ssim_warp - ssim_gs
+            w = torch.sigmoid(diff_ssim / self.tau_blend)  # (H, W)
         else:
-            # Photometric error proxy if target GT is unavailable at test time
+            # S13 Audit Fix: Photometric error proxy when GT is unavailable.
+            # Large diff indicates warping artifact -> decrease warp weight w -> 0.0
             diff_gs = torch.abs(img_gs - img_warped).mean(dim=0)
-            ssim_gs = 1.0 - diff_gs
-            ssim_warp = 1.0 - torch.zeros_like(diff_gs)
-            
-        diff_ssim = ssim_warp - ssim_gs
-        w = torch.sigmoid(diff_ssim / self.tau_blend)  # (H, W)
+            w = torch.exp(-diff_gs / self.tau_blend)
         w_expanded = w.unsqueeze(0).expand_as(img_gs)
         
         img_fused = w_expanded * img_warped + (1.0 - w_expanded) * img_gs
@@ -858,6 +857,16 @@ class GaussianModel:
             noise = torch.randn_like(self._xyz[low_indices]) * 0.05
             self._xyz[low_indices] = self._xyz[rand_sample] + noise
             self._opacity[low_indices] = -2.0  # reset opacity to low initial value
+            
+            # S9 Audit Fix: Zero out stale Adam momentum for relocated splats
+            if self.optimizer is not None:
+                for p in [self._xyz, self._opacity, self._scaling, self._rotation, self._features_dc, self._features_rest]:
+                    if p in self.optimizer.state:
+                        p_state = self.optimizer.state[p]
+                        if 'exp_avg' in p_state:
+                            p_state['exp_avg'][low_indices] = 0.0
+                        if 'exp_avg_sq' in p_state:
+                            p_state['exp_avg_sq'][low_indices] = 0.0
             return len(low_indices)
 
     def prune_points(self, keep_mask: torch.Tensor) -> int:

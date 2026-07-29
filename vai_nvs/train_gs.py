@@ -60,7 +60,7 @@ def parse_args():
     ap.add_argument("--strategy", choices=["default", "mcmc"], default="mcmc")
     ap.add_argument("--max-steps", type=int, default=40000)
     ap.add_argument("--sh-degree", type=int, default=3)
-    ap.add_argument("--cap-max", type=int, default=3000000, help="MCMC gaussian cap")
+    ap.add_argument("--cap-max", type=int, default=1500000, help="MCMC gaussian cap (S10 spec limit: 1.5M)")
     ap.add_argument("--init-opacity", type=float, default=0.1)
     ap.add_argument("--init-scale", type=float, default=1.0)
     ap.add_argument("--init-max-error", type=float, default=1.0, help="drop sfm points above this reproj error")
@@ -223,13 +223,11 @@ def main():
     if len(meta["cameras"]) > 0:
         first_cid = int(list(meta["cameras"].keys())[0])
         sample_K = cams[first_cid]["K"]
+        # S12 Audit Fix: Do NOT scale 3D world coordinates independently of camera translation (tvec)
         _, _, scale_factor = s12_corrector.correct_scale(
             torch.zeros((len(xyz), 2)), sample_K, median_err
         )
-        if scale_factor > 1.0:
-            print(f"[S12 Applied] Scaling 3D points xyz and scene_scale by factor {scale_factor:.2f}")
-            xyz = xyz * scale_factor
-            scene_scale = scene_scale * scale_factor
+        print(f"[S12 Audited] SfM median reproj error: {median_err:.2f}px. Keeping nominal 3D spatial scale.")
 
     # Init S13 Blender
     s13_blender = SoftWarpFusionBlender(tau_blend=0.1)
@@ -400,17 +398,16 @@ def main():
             elif info["means2d"].grad is not None:
                 means2d_grad = info["means2d"].grad.clone()
                 
-            # Normalize grads to screen space like gsplat default strategy
-            if means2d_grad is not None:
-                means2d_grad[..., 0] *= cam["W"] / 2.0
-                means2d_grad[..., 1] *= cam["H"] / 2.0
+            # S3/S4 Audit Fix: Keep means2d_grad in normalized NDC space [-1, 1]
+            # to match NDC thresholds tau_u and tau_v (tau_base = 0.0006)
+            pass
                 
         gaussians.accumulate_gradients(means2d_grad)
 
         # Hacks Post-Backward Logic
         refine_stop_step = int(args.refine_stop_frac * args.max_steps)
+        # S3 & S4 Densification Execution (gated by refine_stop_step)
         if step <= refine_stop_step:
-            # S3 & S4 Densification Execution
             is_densify = (500 <= step <= refine_stop_step) and (step % 100 == 0)
             if is_densify:
                 candidate_mask = s3_s4.evaluate_densification_candidates(
@@ -422,33 +419,34 @@ def main():
                         gaussians.densify_and_split_clone(capped_indices)
                 gaussians.reset_gradient_accumulators()
 
-            # S5 & S7 Pruning
+        # S5 & S7 Periodic Pruning (UNBLOCKED: Runs across full training timeline up to max_steps)
+        if step % 3000 == 0:
             keep_mask, prune_stats = s5_s7.prune(gaussians._xyz, gaussians._opacity, c_mean, r_boundary, step)
             if prune_stats["total_pruned"] > 0:
                 gaussians.prune_points(keep_mask)
 
-            # S9 MCMC Relocation
-            reloc_rate = s9_s10.get_dampened_mcmc_relocation_rate(step)
-            if reloc_rate > 0 and step % 500 == 0:
-                n_reloc = gaussians.relocate_points(reloc_rate)
-                if n_reloc > 0:
-                    print(f"[S9 MCMC Relocation] Step {step}: Relocated {n_reloc:,} splats (rate: {reloc_rate:.6f}).")
+        # S9 MCMC Relocation
+        reloc_rate = s9_s10.get_dampened_mcmc_relocation_rate(step)
+        if reloc_rate > 0 and step % 500 == 0:
+            n_reloc = gaussians.relocate_points(reloc_rate)
+            if n_reloc > 0:
+                print(f"[S9 MCMC Relocation] Step {step}: Relocated {n_reloc:,} splats (rate: {reloc_rate:.6f}).")
 
-            # S10 Hard Cap Ceiling
-            if len(gaussians._xyz) > s9_s10.N_max:
-                excess = len(gaussians._xyz) - s9_s10.N_max
-                opacities = torch.sigmoid(gaussians._opacity).squeeze(-1)
-                _, topk_indices = torch.topk(opacities, s9_s10.N_max, largest=True)
-                cap_keep_mask = torch.zeros(len(gaussians._xyz), dtype=torch.bool, device=device)
-                cap_keep_mask[topk_indices] = True
-                gaussians.prune_points(cap_keep_mask)
+        # S10 Hard Cap Ceiling
+        if len(gaussians._xyz) > s9_s10.N_max:
+            excess = len(gaussians._xyz) - s9_s10.N_max
+            opacities = torch.sigmoid(gaussians._opacity).squeeze(-1)
+            _, topk_indices = torch.topk(opacities, s9_s10.N_max, largest=True)
+            cap_keep_mask = torch.zeros(len(gaussians._xyz), dtype=torch.bool, device=device)
+            cap_keep_mask[topk_indices] = True
+            gaussians.prune_points(cap_keep_mask)
 
         # Optimization step
         gaussians.optimizer.step()
         
         # S8 Truncation Sweep
         current_step = step + 1
-        if current_step in [18000, 36000] or (current_step > 15000 and current_step % 3000 == 0):
+        if current_step in [18000, 36000]:
             new_sh_rest, n_trunc = s6_s8.apply_energy_adaptive_truncation(gaussians._features_dc, gaussians._features_rest, current_step)
             if n_trunc > 0:
                 with torch.no_grad():
@@ -475,17 +473,19 @@ def main():
             print(f"  step {step:6d} loss={loss.item():.4f} n_gauss={splats['means'].shape[0]:,} "
                   f"({time.time() - t0:.0f}s)")
 
-        do_eval = val_names and (step + 1) % args.eval_every == 0
+        # S11 Audit Fix: Support evaluation and early stopping check even when val_names is empty (--fold -1)
+        do_eval = (step + 1) % args.eval_every == 0
         if do_eval or step == args.max_steps - 1:
-            if val_names:
-                agg = evaluate(val_names, f"fold{args.fold}", step + 1)
-                if agg["score_lb"] > best_score:
-                    best_score = agg["score_lb"]
-                    save_checkpoint(out_dir / "ckpt_best.pt", step + 1, splats, app_emb,
-                                    train_names, config, extra={"val_metrics": agg})
-                # S11 Early Stop
-                if s11.check_early_stop(step + 1, agg["score_lb"]):
-                    break
+            eval_targets = val_names if val_names else train_names[:min(5, len(train_names))]
+            agg = evaluate(eval_targets, f"fold{args.fold}", step + 1)
+            if agg["score_lb"] > best_score:
+                best_score = agg["score_lb"]
+                save_checkpoint(out_dir / "ckpt_best.pt", step + 1, splats, app_emb,
+                                train_names, config, extra={"val_metrics": agg})
+            # S11 Early Stop check
+            if s11.check_early_stop(step + 1, agg["score_lb"]):
+                print(f"[S11 Early Stop] Triggered at step {step + 1}. Score gain plateaued (< 0.002).")
+                break
 
     log_f.close()
     save_checkpoint(out_dir / "ckpt_last.pt", args.max_steps, splats, app_emb,
