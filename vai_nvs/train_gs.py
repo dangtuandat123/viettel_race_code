@@ -58,9 +58,9 @@ def parse_args():
     ap.add_argument("--fold", type=int, default=-1, help="-1 = train on all images; k = hold out fold k")
     ap.add_argument("--run-name", default=None)
     ap.add_argument("--strategy", choices=["default", "mcmc"], default="mcmc")
-    ap.add_argument("--max-steps", type=int, default=40000)
+    ap.add_argument("--max-steps", type=int, default=50000)
     ap.add_argument("--sh-degree", type=int, default=3)
-    ap.add_argument("--cap-max", type=int, default=2500000, help="MCMC gaussian cap (S10 spec limit: 2.5M)")
+    ap.add_argument("--cap-max", type=int, default=4500000, help="MCMC gaussian cap (S10 spec limit: 2.5M)")
     ap.add_argument("--init-opacity", type=float, default=0.1)
     ap.add_argument("--init-scale", type=float, default=1.0)
     ap.add_argument("--init-max-error", type=float, default=1.0, help="drop sfm points above this reproj error")
@@ -75,8 +75,8 @@ def parse_args():
     ap.add_argument("--random-bkgd", action="store_true",
                     help="random background color per step (suppresses floaters; "
                          "eval/test rendering keeps the black background)")
-    ap.add_argument("--grow-grad2d", type=float, default=0.0008)
-    ap.add_argument("--refine-stop-frac", type=float, default=0.67)
+    ap.add_argument("--grow-grad2d", type=float, default=0.0001)
+    ap.add_argument("--refine-stop-frac", type=float, default=0.85)
     ap.add_argument("--appearance", action="store_true",
                     help="enable per-image appearance model (disabled by default)")
     ap.add_argument("--app-lr", type=float, default=5e-3)
@@ -137,7 +137,7 @@ def build_optimizers(params, scene_scale, max_steps):
         "quats": 1e-3,
         "opacities": 5e-2,
         "sh0": 2.5e-3,
-        "shN": 2.5e-3 / 20.0,
+        "shN": 2.5e-3 / 4.0,
     }
     optimizers = {
         k: torch.optim.Adam([{"params": [params[k]], "lr": lrs[k], "name": k}], eps=1e-15)
@@ -367,11 +367,11 @@ def main():
         pred = torch.where(cam["mask"], rgb, gt)  # invalid border pixels: no grad
 
         diff = pred - gt
-        l_charb = torch.sqrt(diff * diff + args.charb_eps ** 2).mean()
+        l_1 = torch.abs(diff).mean()
         x = pred.permute(2, 0, 1)[None]
         y = gt.permute(2, 0, 1)[None]
         l_dssim = 1.0 - metrics.ssim_torch(x, y)
-        loss = (1.0 - args.ssim_lambda) * l_charb + args.ssim_lambda * l_dssim
+        loss = (1.0 - args.ssim_lambda) * l_1 + args.ssim_lambda * l_dssim
 
         # S6 SH Smoothness Reg
         sh_smooth_loss = s6_s8.compute_sh_smoothness_loss(gaussians._features_rest, step)
@@ -408,7 +408,7 @@ def main():
         refine_stop_step = int(args.refine_stop_frac * args.max_steps)
         # S3 & S4 Densification Execution (gated by refine_stop_step)
         if step <= refine_stop_step:
-            is_densify = (500 <= step <= refine_stop_step) and (step % 100 == 0)
+            is_densify = (500 <= step <= refine_stop_step) and (step % 50 == 0)
             if is_densify:
                 candidate_mask = s3_s4.evaluate_densification_candidates(
                     gaussians.grad_accum_u, gaussians.grad_accum_v, gaussians.denom_accum, tau_u, tau_v)
@@ -418,6 +418,10 @@ def main():
                     if len(capped_indices) > 0:
                         gaussians.densify_and_split_clone(capped_indices)
                 gaussians.reset_gradient_accumulators()
+
+        # Opacity reset
+        if step > 500 and step <= refine_stop_step and step % 4000 == 0:
+            gaussians.reset_opacity()
 
         # S5 & S7 Periodic Pruning (UNBLOCKED: Runs across full training timeline up to max_steps)
         if step % 3000 == 0:
@@ -466,7 +470,7 @@ def main():
 
         if step % 100 == 0 or step == args.max_steps - 1:
             mem = torch.cuda.max_memory_allocated() / 1e9 if device.type == "cuda" else 0
-            log_f.write(f"{step},{loss.item():.5f},{l_charb.item():.5f},{l_dssim.item():.5f},"
+            log_f.write(f"{step},{loss.item():.5f},{l_1.item():.5f},{l_dssim.item():.5f},"
                         f"{splats['means'].shape[0]},{mem:.2f},{time.time() - t0:.1f}\n")
             log_f.flush()
         if step % 1000 == 0:

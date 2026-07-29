@@ -691,6 +691,12 @@ class GaussianModel:
     def get_opacity(self) -> torch.Tensor:
         return self._opacity
 
+    def reset_opacity(self):
+        with torch.no_grad():
+            # Reset opacity to min(current_opacity, logit(0.01))
+            opacities_new = torch.min(self._opacity, torch.ones_like(self._opacity) * -4.5951)
+            self._opacity.copy_(opacities_new)
+
     @property
     def get_features_dc(self) -> torch.Tensor:
         return self._features_dc
