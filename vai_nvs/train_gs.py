@@ -60,7 +60,7 @@ def parse_args():
     ap.add_argument("--strategy", choices=["default", "mcmc"], default="mcmc")
     ap.add_argument("--max-steps", type=int, default=40000)
     ap.add_argument("--sh-degree", type=int, default=3)
-    ap.add_argument("--cap-max", type=int, default=1500000, help="MCMC gaussian cap (S10 spec limit: 1.5M)")
+    ap.add_argument("--cap-max", type=int, default=2500000, help="MCMC gaussian cap (S10 spec limit: 2.5M)")
     ap.add_argument("--init-opacity", type=float, default=0.1)
     ap.add_argument("--init-scale", type=float, default=1.0)
     ap.add_argument("--init-max-error", type=float, default=1.0, help="drop sfm points above this reproj error")
@@ -75,7 +75,7 @@ def parse_args():
     ap.add_argument("--random-bkgd", action="store_true",
                     help="random background color per step (suppresses floaters; "
                          "eval/test rendering keeps the black background)")
-    ap.add_argument("--grow-grad2d", type=float, default=0.0006)
+    ap.add_argument("--grow-grad2d", type=float, default=0.0008)
     ap.add_argument("--refine-stop-frac", type=float, default=0.67)
     ap.add_argument("--appearance", action="store_true",
                     help="enable per-image appearance model (disabled by default)")

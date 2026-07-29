@@ -281,9 +281,9 @@ class MCMCStabilizerAndCapManager:
     """
     def __init__(
         self,
-        beta_0: float = 0.005,
+        beta_0: float = 0.001,
         gamma: float = 1.5e-4,
-        N_max: int = 1500000
+        N_max: int = 2500000
     ):
         self.beta_0 = beta_0
         self.gamma = gamma
@@ -341,7 +341,7 @@ class FrustumAndFogPruner:
     """
     def __init__(
         self,
-        tau_fog: float = 0.01,
+        tau_fog: float = 0.005,
         periodic_interval: int = 3000,
         start_step: int = 6000
     ):
@@ -426,7 +426,7 @@ class SHRegularizerAndTruncator:
         self,
         reg_window: int = 15000,
         min_trunc_step: int = 18000,
-        epsilon_sh: float = 0.05
+        epsilon_sh: float = 0.005
     ):
         self.reg_window = reg_window
         self.min_trunc_step = min_trunc_step
@@ -856,7 +856,7 @@ class GaussianModel:
             rand_sample = high_indices[torch.randint(0, len(high_indices), (len(low_indices),))]
             noise = torch.randn_like(self._xyz[low_indices]) * 0.05
             self._xyz[low_indices] = self._xyz[rand_sample] + noise
-            self._opacity[low_indices] = -2.0  # reset opacity to low initial value
+            self._opacity[low_indices] = -1.0  # reset opacity to low initial value
             
             # S9 Audit Fix: Zero out stale Adam momentum for relocated splats
             if self.optimizer is not None:
@@ -930,7 +930,7 @@ class TripleCheck3DGSPipeline:
         self.s12_corrector = COLMAPScaleCorrector(sanity_threshold=1.0)
         self.s1_s2_preprocessor = RobustSceneScalePreprocessor()
         self.s3_s4_densifier = FocalAspectAdaptiveDensifier()
-        self.s9_s10_mcmc_cap = MCMCStabilizerAndCapManager(N_max=1500000)
+        self.s9_s10_mcmc_cap = MCMCStabilizerAndCapManager(N_max=2500000)
         self.s5_s7_pruner = FrustumAndFogPruner()
         self.s6_s8_sh_manager = SHRegularizerAndTruncator()
         self.s11_monitor = EarlyConvergenceMonitor()
