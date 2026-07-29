@@ -33,6 +33,7 @@ from PIL import Image
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
+from vai_nvs.triple_hacks import compute_multiscale_loss
 from . import colmap_io, dataset as ds, metrics
 from . import cameras as camlib
 from .gs_render import render_gs, apply_appearance, interp_appearance, save_checkpoint
@@ -61,10 +62,10 @@ def parse_args():
     ap.add_argument("--max-steps", type=int, default=50000)
     ap.add_argument("--sh-degree", type=int, default=3)
     ap.add_argument("--cap-max", type=int, default=4500000, help="MCMC gaussian cap (S10 spec limit: 2.5M)")
-    ap.add_argument("--init-opacity", type=float, default=0.1)
+    ap.add_argument("--init-opacity", type=float, default=0.005)
     ap.add_argument("--init-scale", type=float, default=1.0)
     ap.add_argument("--init-max-error", type=float, default=1.0, help="drop sfm points above this reproj error")
-    ap.add_argument("--ssim-lambda", type=float, default=0.3)
+    ap.add_argument("--ssim-lambda", type=float, default=0.2)
     ap.add_argument("--charb-eps", type=float, default=1e-3)
     ap.add_argument("--lpips-weight", type=float, default=0.1, help="late-phase LPIPS loss weight (0=off)")
     ap.add_argument("--lpips-start-frac", type=float, default=0.33)
@@ -76,7 +77,7 @@ def parse_args():
                     help="random background color per step (suppresses floaters; "
                          "eval/test rendering keeps the black background)")
     ap.add_argument("--grow-grad2d", type=float, default=0.0001)
-    ap.add_argument("--refine-stop-frac", type=float, default=0.85)
+    ap.add_argument("--refine-stop-frac", type=float, default=0.70)
     ap.add_argument("--appearance", action="store_true",
                     help="enable per-image appearance model (disabled by default)")
     ap.add_argument("--app-lr", type=float, default=5e-3)
@@ -135,7 +136,7 @@ def build_optimizers(params, scene_scale, max_steps):
         "means": 1.6e-4 * scene_scale,
         "scales": 5e-3,
         "quats": 1e-3,
-        "opacities": 5e-2,
+        "opacities": 2.5e-2,
         "sh0": 2.5e-3,
         "shN": 2.5e-3,  # Hotfix #4: Restore equal LR for shN (2.5e-3)
     }
@@ -143,8 +144,14 @@ def build_optimizers(params, scene_scale, max_steps):
         k: torch.optim.Adam([{"params": [params[k]], "lr": lrs[k], "name": k}], eps=1e-15)
         for k in params.keys()
     }
-    sched = torch.optim.lr_scheduler.ExponentialLR(
-        optimizers["means"], gamma=0.01 ** (1.0 / max_steps))
+    def lr_lambda(step):
+        delay_steps = 500
+        delay_mult = 0.01
+        delay_rate = delay_mult + (1.0 - delay_mult) * np.sin(0.5 * np.pi * np.clip(step / delay_steps, 0, 1))
+        t = np.clip(step / max_steps, 0, 1)
+        return delay_rate * (0.01 ** t)
+    
+    sched = torch.optim.lr_scheduler.LambdaLR(optimizers["means"], lr_lambda=lr_lambda)
     return optimizers, sched
 
 
@@ -214,7 +221,7 @@ def main():
     # Init 13 Hacks Modules
     s12_corrector = COLMAPScaleCorrector()
     s1_s2 = RobustSceneScalePreprocessor()
-    s3_s4 = FocalAspectAdaptiveDensifier(tau_base=args.grow_grad2d)
+    s3_s4 = FocalAspectAdaptiveDensifier(tau_base=0.00008)
     s9_s10 = MCMCStabilizerAndCapManager(N_max=args.cap_max)
     s5_s7 = FrustumAndFogPruner()
     s6_s8 = SHRegularizerAndTruncator()
@@ -367,11 +374,11 @@ def main():
         pred = torch.where(cam["mask"], rgb, gt)  # invalid border pixels: no grad
 
         diff = pred - gt
-        l_1 = torch.abs(diff).mean()
         x = pred.permute(2, 0, 1)[None]
         y = gt.permute(2, 0, 1)[None]
-        l_dssim = 1.0 - metrics.ssim_torch(x, y)
-        loss = (1.0 - args.ssim_lambda) * l_1 + args.ssim_lambda * l_dssim
+        
+        # S13: Multi-scale SSIM and LPIPS-VGG
+        loss, l_1, l_dssim = compute_multiscale_loss(x, y, step, args.max_steps, lpips_train)
 
         # S6 SH Smoothness Reg
         sh_smooth_loss = s6_s8.compute_sh_smoothness_loss(gaussians._features_rest, step)
@@ -379,13 +386,6 @@ def main():
 
         if use_app:
             loss = loss + args.app_reg * app_emb[name2appidx[nm]].square().mean()
-        if lpips_train is not None and int(args.lpips_start_frac * args.max_steps) <= step < int(args.lpips_end_frac * args.max_steps):
-            c = args.lpips_crop
-            hh = rng.randint(0, max(1, cam["H"] - c))
-            ww = rng.randint(0, max(1, cam["W"] - c))
-            xc = x[..., hh:hh + c, ww:ww + c] * 2 - 1
-            yc = y[..., hh:hh + c, ww:ww + c] * 2 - 1
-            loss = loss + args.lpips_weight * lpips_train(xc, yc).mean()
 
         gaussians.optimizer.zero_grad(set_to_none=True)
         loss.backward()
@@ -407,7 +407,7 @@ def main():
         refine_stop_step = int(args.refine_stop_frac * args.max_steps)
         # S3 & S4 Densification Execution (gated by refine_stop_step)
         if step <= refine_stop_step:
-            is_densify = (500 <= step <= refine_stop_step) and (step % 50 == 0)
+            is_densify = (500 <= step <= refine_stop_step) and (step % 100 == 0)
             if is_densify:
                 candidate_mask = s3_s4.evaluate_densification_candidates(
                     gaussians.grad_accum_u, gaussians.grad_accum_v, gaussians.denom_accum, tau_u, tau_v)
@@ -427,6 +427,16 @@ def main():
             keep_mask, prune_stats = s5_s7.prune(gaussians._xyz, gaussians._opacity, c_mean, r_boundary, step)
             if prune_stats["total_pruned"] > 0:
                 gaussians.prune_points(keep_mask)
+        
+        # Screen-space Max Radii Pruning
+        if step > 500 and step % 100 == 0:
+            # Note: actual pruning using max_screen_size=20
+            # Since max_screen_size pruning needs screen radii, we should fetch it from info
+            if "radii" in info:
+                radii = info["radii"]
+                radii_mask = radii <= 20
+                if (~radii_mask).sum() > 0:
+                    gaussians.prune_points(radii_mask)
 
         # S9 MCMC Relocation
         reloc_rate = s9_s10.get_dampened_mcmc_relocation_rate(step)
@@ -446,6 +456,12 @@ def main():
 
         # Optimization step
         gaussians.optimizer.step()
+        
+        # S13: Covariance Ratio Guard
+        with torch.no_grad():
+            scaling = gaussians._scaling
+            max_scale = scaling.max(dim=1, keepdim=True).values
+            scaling.copy_(torch.max(scaling, max_scale - math.log(20.0)))
         
         # S8 Truncation Sweep
         current_step = step + 1

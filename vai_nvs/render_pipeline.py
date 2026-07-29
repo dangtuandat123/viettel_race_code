@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 import cv2
 
 from . import cameras as camlib
@@ -55,22 +56,46 @@ def render_view_to_distorted(splats: dict, qvec, tvec, render_K, dist_cam,
     s = float(supersample)
     rw, rh = int(round(width * s)), int(round(height * s))
     fx, fy, cx, cy = render_K
-    K = torch.tensor([[fx * s, 0.0, cx * s],
-                      [0.0, fy * s, cy * s],
+    
+    # S13: Supersample Principal Point Correction
+    if s == 2.0:
+        cx_s = 2.0 * cx - 0.5
+        cy_s = 2.0 * cy - 0.5
+    else:
+        cx_s = cx * s
+        cy_s = cy * s
+        
+    K = torch.tensor([[fx * s, 0.0, cx_s],
+                      [0.0, fy * s, cy_s],
                       [0.0, 0.0, 1.0]], dtype=torch.float32)
+                      
     viewmat = torch.from_numpy(camlib.w2c_matrix(qvec, tvec)).float()
     render, _, _ = render_gs(splats, viewmat, K, rw, rh, sh_degree,
                              render_mode="RGB", antialiased=antialiased)
-    rgb = apply_appearance(render, app_emb6)
-    rgb = torch.clamp(rgb, 0.0, 1.0).cpu().numpy().astype(np.float32)
+    
+    # S13: Fast GPU PyTorch Redistortion
+    rgb_gpu = torch.clamp(apply_appearance(render, app_emb6), 0.0, 1.0)
+    rgb_gpu = rgb_gpu.permute(2, 0, 1).unsqueeze(0)  # (1, 3, rh, rw)
 
     if cache is None:
         cache = RedistortCache()
     map_x, map_y = cache.get(render_K, dist_cam, width, height, s)
-    interp = cv2.INTER_LANCZOS4 if s == 1.0 else cv2.INTER_LINEAR
-    warped = cv2.remap(rgb, map_x, map_y, interpolation=interp,
-                       borderMode=cv2.BORDER_REPLICATE)
+    
+    grid_x = torch.from_numpy(map_x).to(device)
+    grid_y = torch.from_numpy(map_y).to(device)
+    
+    # Normalize to [-1, 1] for grid_sample
+    grid_x_norm = (grid_x / (rw - 1)) * 2.0 - 1.0
+    grid_y_norm = (grid_y / (rh - 1)) * 2.0 - 1.0
+    grid = torch.stack([grid_x_norm, grid_y_norm], dim=-1).unsqueeze(0)  # (1, rh, rw, 2)
+    
+    # Reflection padding matching BORDER_REPLICATE
+    warped_gpu = F.grid_sample(rgb_gpu, grid, mode='bilinear' if s != 1.0 else 'bicubic', 
+                               padding_mode='reflection', align_corners=True)
+                               
     if s != 1.0:
-        warped = cv2.resize(warped, (width, height), interpolation=cv2.INTER_AREA)
+        warped_gpu = F.adaptive_avg_pool2d(warped_gpu, (height, width))
+        
+    warped = warped_gpu.squeeze(0).permute(1, 2, 0).cpu().numpy()
     warped = np.clip(warped, 0.0, 1.0)
     return (warped * 255.0 + 0.5).astype(np.uint8)

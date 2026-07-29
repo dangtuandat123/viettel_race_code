@@ -268,6 +268,59 @@ class FocalAspectAdaptiveDensifier:
         return candidate_mask
 
 
+def ssim_reflect_padded(x: torch.Tensor, y: torch.Tensor, win_size: int = 11):
+    from vai_nvs import metrics
+    pad = win_size // 2
+    x_padded = F.pad(x, (pad, pad, pad, pad), mode='reflect')
+    y_padded = F.pad(y, (pad, pad, pad, pad), mode='reflect')
+    return metrics.ssim_torch(x_padded, y_padded)
+
+def compute_multiscale_loss(render_img, gt_img, step, max_steps, lpips_fn):
+    l1 = F.l1_loss(render_img, gt_img)
+    ssim_val = ssim_reflect_padded(render_img, gt_img)
+    
+    r_half = F.interpolate(render_img, scale_factor=0.5, mode='bilinear', align_corners=False)
+    g_half = F.interpolate(gt_img, scale_factor=0.5, mode='bilinear', align_corners=False)
+    ms_ssim = 0.6 * ssim_val + 0.4 * ssim_reflect_padded(r_half, g_half)
+    
+    alpha = min(0.3, (step / max_steps) * 0.3)
+    photo_loss = (1.0 - alpha) * l1 + alpha * (1.0 - ms_ssim)
+    
+    if step >= 15000 and lpips_fn is not None:
+        w_lpips = 0.1 * torch.sigmoid(torch.tensor((step - 15000) / 3000.0)).item()
+        loss_lpips = lpips_fn(render_img * 2 - 1, gt_img * 2 - 1).mean()
+        total_loss = photo_loss + w_lpips * loss_lpips
+    else:
+        total_loss = photo_loss
+    return total_loss, l1, 1.0 - ssim_val
+
+
+class TemporalGradientAccumulator:
+    def __init__(self, num_gaussians: int, window_size: int = 100):
+        self.window_size = window_size
+        self.grad_buffer = torch.zeros((num_gaussians, 2), dtype=torch.float32, device="cuda")
+        self.count_buffer = torch.zeros(num_gaussians, dtype=torch.float32, device="cuda")
+        
+    def update(self, grad_2d: torch.Tensor):
+        with torch.no_grad():
+            if len(grad_2d) > len(self.grad_buffer):
+                # pad with zeros
+                pad_size = len(grad_2d) - len(self.grad_buffer)
+                self.grad_buffer = torch.cat([self.grad_buffer, torch.zeros((pad_size, 2), device="cuda")])
+                self.count_buffer = torch.cat([self.count_buffer, torch.zeros(pad_size, device="cuda")])
+            
+            self.grad_buffer += grad_2d.abs()
+            self.count_buffer += 1.0
+
+    def get_smoothed_grad(self) -> torch.Tensor:
+        denom = torch.clamp(self.count_buffer.unsqueeze(-1), min=1.0)
+        return self.grad_buffer / denom
+
+    def reset(self):
+        self.grad_buffer.zero_()
+        self.count_buffer.zero_()
+
+
 # ============================================================================
 # 4. Module MCMCStabilizerAndCapManager (S9, S10)
 # ============================================================================
@@ -696,6 +749,18 @@ class GaussianModel:
             # Reset opacity to min(current_opacity, logit(0.01))
             opacities_new = torch.min(self._opacity, torch.ones_like(self._opacity) * -4.5951)
             self._opacity.copy_(opacities_new)
+            
+            # S13: Adam Cleansing
+            if self.optimizer is not None:
+                for group in self.optimizer.param_groups:
+                    if group["name"] == "opacity":
+                        param = group["params"][0]
+                        if param in self.optimizer.state:
+                            state = self.optimizer.state[param]
+                            if "exp_avg" in state:
+                                state["exp_avg"].zero_()
+                            if "exp_avg_sq" in state:
+                                state["exp_avg_sq"].zero_()
 
     @property
     def get_features_dc(self) -> torch.Tensor:

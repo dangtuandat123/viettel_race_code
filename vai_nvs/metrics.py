@@ -56,7 +56,7 @@ def psnr_torch(x: torch.Tensor, y: torch.Tensor, data_range=1.0):
     return 10.0 * torch.log10(data_range ** 2 / torch.clamp(mse, min=1e-12))
 
 
-def get_lpips(net="alex", device="cuda"):
+def get_lpips(net="vgg", device="cuda"):
     key = (net, str(device))
     if key not in _LPIPS_CACHE:
         import lpips  # lazy: heavy import
@@ -68,13 +68,13 @@ def get_lpips(net="alex", device="cuda"):
 
 
 @torch.no_grad()
-def lpips_value(x: torch.Tensor, y: torch.Tensor, net="alex", device="cuda"):
+def lpips_value(x: torch.Tensor, y: torch.Tensor, net="vgg", device="cuda"):
     """x, y: [B,3,H,W] in [0,1]."""
     model = get_lpips(net, device)
     return float(model(x.to(device) * 2 - 1, y.to(device) * 2 - 1).mean())
 
 
-def official_score(lpips_val: float, ssim_val: float, psnr_val: float, psnr_max: float = 40.0):
+def official_score(lpips_val: float, ssim_val: float, psnr_val: float, psnr_max: float = 50.0):
     psnr_norm = float(np.clip(psnr_val / psnr_max, 0.0, 1.0))
     return 0.4 * (1.0 - lpips_val) + 0.3 * ssim_val + 0.3 * psnr_norm
 
