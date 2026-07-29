@@ -16,7 +16,7 @@ FOLD0=${FOLD0:-1}          # FOLD0=1: run fold-0 for validation metrics
 # Defaults: MCMC with 3M cap, SH degree 2; all other params use train_gs.py
 # code defaults (init-opacity 0.1, init-scale 1.0, lpips-weight 0.1, etc.).
 TRAIN_FLAGS=${TRAIN_FLAGS:---cap-max 4500000 --sh-degree 3}
-EXTRA_ARGS=${EXTRA_ARGS:---grow-grad2d 0.0001 --lpips-weight 0.1 --ssim-lambda 0.25}
+EXTRA_ARGS=${EXTRA_ARGS:---grow-grad2d 0.0001 --lpips-weight 0.1 --ssim-lambda 0.2}
 RUN_FULL="${STRAT}_f-1_s$((STEPS/1000))k"
 RUN_FOLD="${STRAT}_f0_s$((STEPS/1000))k"
 

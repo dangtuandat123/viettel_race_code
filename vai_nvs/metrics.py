@@ -35,6 +35,12 @@ def ssim_torch(x: torch.Tensor, y: torch.Tensor, data_range=1.0, win_size=11, si
     w = _gaussian_window(c, x.device, x.dtype, win_size, sigma)
     c1 = (0.01 * data_range) ** 2
     c2 = (0.03 * data_range) ** 2
+    
+    pad = win_size // 2
+    # Hotfix #2: Apply reflection padding to prevent border zeroing floaters
+    x = F.pad(x, (pad, pad, pad, pad), mode='reflect')
+    y = F.pad(y, (pad, pad, pad, pad), mode='reflect')
+    
     mu_x = F.conv2d(x, w, groups=c)
     mu_y = F.conv2d(y, w, groups=c)
     mu_x2, mu_y2, mu_xy = mu_x * mu_x, mu_y * mu_y, mu_x * mu_y

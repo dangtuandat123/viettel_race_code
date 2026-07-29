@@ -26,11 +26,17 @@ def render_gs(splats: dict, viewmat: torch.Tensor, K: torch.Tensor, width: int, 
     if background is None:
         background = torch.zeros(1, 3, device=device)
     colors = torch.cat([splats["sh0"], splats["shN"]], dim=1)
+    
+    opacities = torch.sigmoid(splats["opacities"].squeeze(-1) if splats["opacities"].ndim == 2 else splats["opacities"])
+    # Hotfix #3: Enforce CUDA Hard Alpha Threshold to prevent fog splats
+    alpha_cutoff = 1.0 / 255.0
+    opacities = torch.where(opacities < alpha_cutoff, torch.zeros_like(opacities), opacities)
+    
     renders, alphas, info = rasterization(
         means=splats["means"],
         quats=splats["quats"],
         scales=torch.exp(splats["scales"]),
-        opacities=torch.sigmoid(splats["opacities"].squeeze(-1) if splats["opacities"].ndim == 2 else splats["opacities"]),
+        opacities=opacities,
         colors=colors,
         viewmats=viewmat[None].to(device),
         Ks=K[None].to(device),

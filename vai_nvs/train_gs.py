@@ -137,7 +137,7 @@ def build_optimizers(params, scene_scale, max_steps):
         "quats": 1e-3,
         "opacities": 5e-2,
         "sh0": 2.5e-3,
-        "shN": 2.5e-3 / 4.0,
+        "shN": 2.5e-3,  # Hotfix #4: Restore equal LR for shN (2.5e-3)
     }
     optimizers = {
         k: torch.optim.Adam([{"params": [params[k]], "lr": lrs[k], "name": k}], eps=1e-15)

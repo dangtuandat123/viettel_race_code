@@ -49,8 +49,8 @@ def undistort_scene_images(scene: ds.Scene, out_dir: Path, workers=4) -> dict:
         mx, my = maps[rec.camera_id]
         with Image.open(scene.train_images_dir / name) as im:
             arr = np.asarray(im.convert("RGB"))
-        und = cv2.remap(arr, mx, my, interpolation=cv2.INTER_CUBIC,
-                        borderMode=cv2.BORDER_REPLICATE)
+        # Hotfix #5: Disable Bicubic Pre-Blurring by skipping cv2.remap
+        und = arr
         Image.fromarray(und).save(dst, compress_level=3)
 
     with ThreadPoolExecutor(max_workers=workers) as ex:

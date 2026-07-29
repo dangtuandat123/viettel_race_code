@@ -58,10 +58,16 @@ def camera_pinhole(cam) -> tuple[float, float, float, float]:
     """(fx, fy, cx, cy) of a COLMAP Camera, ignoring distortion params."""
     p = cam.params
     if cam.model in ("SIMPLE_PINHOLE", "SIMPLE_RADIAL", "RADIAL"):
-        return float(p[0]), float(p[0]), float(p[1]), float(p[2])
-    if cam.model in ("PINHOLE", "OPENCV"):
-        return float(p[0]), float(p[1]), float(p[2]), float(p[3])
-    raise ValueError(f"Unsupported camera model: {cam.model}")
+        fx, fy = float(p[0]), float(p[0])
+    elif cam.model in ("PINHOLE", "OPENCV"):
+        fx, fy = float(p[0]), float(p[1])
+    else:
+        raise ValueError(f"Unsupported camera model: {cam.model}")
+    # Hotfix #1: Force principal point to center to match train_gs_original's 
+    # intentional projection matrix shift.
+    cx = cam.width / 2.0
+    cy = cam.height / 2.0
+    return fx, fy, cx, cy
 
 
 def distortion_params(cam) -> np.ndarray:
